@@ -14,7 +14,7 @@ import {
   useState,
 } from "react";
 
-type Notification = {
+type NotificationItem = {
   id: string;
   profile_id: string;
   title: string | null;
@@ -31,7 +31,7 @@ export default function NotificationBell() {
     useState("");
 
   const [notifications, setNotifications] =
-    useState<Notification[]>([]);
+    useState<NotificationItem[]>([]);
 
   const [isOpen, setIsOpen] =
     useState(false);
@@ -42,8 +42,7 @@ export default function NotificationBell() {
   const [isUpdating, setIsUpdating] =
     useState(false);
 
-  const [error, setError] =
-    useState("");
+  const [error, setError] = useState("");
 
   const loadNotifications = useCallback(
     async (selectedProfileId: string) => {
@@ -96,8 +95,7 @@ export default function NotificationBell() {
       const {
         data: { user },
         error: userError,
-      } =
-        await supabase.auth.getUser();
+      } = await supabase.auth.getUser();
 
       if (userError || !user) {
         setIsLoading(false);
@@ -128,7 +126,7 @@ export default function NotificationBell() {
 
       channel = supabase
         .channel(
-          `citizen-notifications-${profile.id}`,
+          `notification-bell-${profile.id}`,
         )
         .on(
           "postgres_changes",
@@ -191,15 +189,12 @@ export default function NotificationBell() {
         !notification.is_read,
     ).length;
 
-  async function handleNotificationClick(
-    notification: Notification,
+  async function markNotificationRead(
+    notification: NotificationItem,
   ) {
     if (notification.is_read) {
-      setIsOpen(false);
       return;
     }
-
-    setError("");
 
     const { error: updateError } =
       await supabase
@@ -228,8 +223,6 @@ export default function NotificationBell() {
           : item,
       ),
     );
-
-    setIsOpen(false);
   }
 
   async function handleMarkAllRead() {
@@ -364,7 +357,7 @@ export default function NotificationBell() {
                     key={notification.id}
                     type="button"
                     onClick={() =>
-                      handleNotificationClick(
+                      markNotificationRead(
                         notification,
                       )
                     }
@@ -434,13 +427,12 @@ function formatNotificationTime(
   dateValue: string,
 ) {
   const date = new Date(dateValue);
-  const now = new Date();
-
   const difference =
-    now.getTime() - date.getTime();
+    Date.now() - date.getTime();
 
-  const minutes = Math.floor(
-    difference / 60000,
+  const minutes = Math.max(
+    0,
+    Math.floor(difference / 60000),
   );
 
   if (minutes < 1) {
