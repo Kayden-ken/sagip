@@ -156,6 +156,12 @@ export default function EmergencyPage() {
   ) {
     setIsLookingUpAddress(true);
 
+    const controller = new AbortController();
+
+    const timeoutId = window.setTimeout(() => {
+      controller.abort();
+    }, 8000);
+
     try {
       const response = await fetch(
         `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${selectedLatitude}&lon=${selectedLongitude}`,
@@ -163,6 +169,7 @@ export default function EmergencyPage() {
           headers: {
             "Accept-Language": "en",
           },
+          signal: controller.signal,
         },
       );
 
@@ -179,10 +186,12 @@ export default function EmergencyPage() {
       );
     } catch {
       setAddress("");
+
       setError(
-        "Your location was detected, but the address could not be retrieved. You may enter it manually.",
+        "Your GPS location was detected. The address lookup was unavailable, but you may still submit the request or enter the address manually.",
       );
     } finally {
+      window.clearTimeout(timeoutId);
       setIsLookingUpAddress(false);
     }
   }
@@ -294,13 +303,6 @@ export default function EmergencyPage() {
     ) {
       setError(
         "Please capture or select your current location before submitting.",
-      );
-      return;
-    }
-
-    if (isLookingUpAddress) {
-      setError(
-        "Please wait for the location lookup to finish.",
       );
       return;
     }
@@ -696,14 +698,17 @@ export default function EmergencyPage() {
               disabled={
                 isSubmitting ||
                 !profileId ||
-                isLookingUpAddress ||
-                isLocating
+                latitude === null ||
+                longitude === null
               }
               className="w-full rounded-2xl bg-red-700 px-6 py-4 text-lg font-extrabold text-white shadow-lg shadow-red-200 transition hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isSubmitting
                 ? "Sending Emergency Request..."
-                : "Send Emergency Request"}
+                : latitude === null ||
+                    longitude === null
+                  ? "Use Your Location First"
+                  : "Send Emergency Request"}
             </button>
 
             <p className="text-center text-xs leading-5 text-slate-400">

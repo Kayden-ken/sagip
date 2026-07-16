@@ -1,8 +1,8 @@
 "use client";
 
+import NotificationBell from "@/components/notification-bell";
 import { supabase } from "@/lib/supabase";
 import {
-  Bell,
   ClipboardList,
   Clock3,
   HeartHandshake,
@@ -94,9 +94,6 @@ export default function DashboardPage() {
   const [profile, setProfile] =
     useState<UserProfile | null>(null);
 
-  const [profileId, setProfileId] =
-    useState("");
-
   const [
     activeRequest,
     setActiveRequest,
@@ -105,44 +102,11 @@ export default function DashboardPage() {
       null,
     );
 
-  const [unreadCount, setUnreadCount] =
-    useState(0);
-
   const [isLoading, setIsLoading] =
     useState(true);
 
   const [error, setError] =
     useState("");
-
-  const loadUnreadCount = useCallback(
-    async (selectedProfileId: string) => {
-      const {
-        count,
-        error: notificationError,
-      } = await supabase
-        .from("notifications")
-        .select("id", {
-          count: "exact",
-          head: true,
-        })
-        .eq(
-          "profile_id",
-          selectedProfileId,
-        )
-        .eq("is_read", false);
-
-      if (notificationError) {
-        console.error(
-          "Unable to load unread notifications:",
-          notificationError.message,
-        );
-        return;
-      }
-
-      setUnreadCount(count ?? 0);
-    },
-    [],
-  );
 
   const loadActiveRequest = useCallback(
     async (selectedProfileId: string) => {
@@ -185,12 +149,6 @@ export default function DashboardPage() {
   );
 
   useEffect(() => {
-    let notificationChannel:
-      | ReturnType<
-          typeof supabase.channel
-        >
-      | undefined;
-
     let requestChannel:
       | ReturnType<
           typeof supabase.channel
@@ -271,40 +229,9 @@ export default function DashboardPage() {
         const selectedProfileId =
           profileData.id;
 
-        setProfileId(
+        await loadActiveRequest(
           selectedProfileId,
         );
-
-        await Promise.all([
-          loadUnreadCount(
-            selectedProfileId,
-          ),
-          loadActiveRequest(
-            selectedProfileId,
-          ),
-        ]);
-
-        notificationChannel =
-          supabase
-            .channel(
-              `dashboard-notifications-${selectedProfileId}`,
-            )
-            .on(
-              "postgres_changes",
-              {
-                event: "*",
-                schema: "public",
-                table:
-                  "notifications",
-                filter: `profile_id=eq.${selectedProfileId}`,
-              },
-              async () => {
-                await loadUnreadCount(
-                  selectedProfileId,
-                );
-              },
-            )
-            .subscribe();
 
         requestChannel = supabase
           .channel(
@@ -334,12 +261,6 @@ export default function DashboardPage() {
     initializeDashboard();
 
     return () => {
-      if (notificationChannel) {
-        supabase.removeChannel(
-          notificationChannel,
-        );
-      }
-
       if (requestChannel) {
         supabase.removeChannel(
           requestChannel,
@@ -348,7 +269,6 @@ export default function DashboardPage() {
     };
   }, [
     loadActiveRequest,
-    loadUnreadCount,
     router,
   ]);
 
@@ -410,25 +330,7 @@ export default function DashboardPage() {
           </Link>
 
           <div className="flex items-center gap-2">
-            <Link
-              href="/notifications"
-              aria-label={
-                unreadCount > 0
-                  ? `${unreadCount} unread notifications`
-                  : "Notifications"
-              }
-              className="relative rounded-xl border border-slate-200 bg-white p-3 text-slate-600 transition hover:bg-slate-100"
-            >
-              <Bell className="size-5" />
-
-              {unreadCount > 0 && (
-                <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-extrabold text-white">
-                  {unreadCount > 99
-                    ? "99+"
-                    : unreadCount}
-                </span>
-              )}
-            </Link>
+            <NotificationBell />
 
             <Link
               href="/profile"
