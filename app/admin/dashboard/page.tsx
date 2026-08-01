@@ -1,20 +1,31 @@
 "use client";
 
 import { supabase } from "@/lib/supabase";
+import {
+  getAdminAnalytics,
+  type AdminAnalyticsData,
+} from "@/lib/admin-analytics";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   Clock3,
   ExternalLink,
+  Eye,
+  FileBarChart,
   LoaderCircle,
   LogOut,
   MapPin,
+  PieChart,
   RefreshCw,
   Send,
   ShieldCheck,
   Siren,
+  Timer,
+  TrendingUp,
   UserRound,
   Users,
 } from "lucide-react";
@@ -56,6 +67,13 @@ type Responder = {
 type ResponderLocation = {
   responder_id: string;
   emergency_request_id: string;
+  latitude: number | string;
+  longitude: number | string;
+  updated_at: string;
+};
+
+type ResponderPresenceLocation = {
+  responder_id: string;
   latitude: number | string;
   longitude: number | string;
   updated_at: string;
@@ -126,6 +144,11 @@ export default function AdminDashboardPage() {
   ] = useState<ResponderLocation[]>([]);
 
   const [
+    presenceLocations,
+    setPresenceLocations,
+  ] = useState<ResponderPresenceLocation[]>([]);
+
+  const [
     selectedResponders,
     setSelectedResponders,
   ] = useState<Record<string, string>>({});
@@ -144,6 +167,12 @@ export default function AdminDashboardPage() {
       registeredCitizens: 0,
       completedToday: 0,
     });
+
+
+  const [analytics, setAnalytics] =
+    useState<AdminAnalyticsData | null>(
+      null,
+    );
 
   const [isLoading, setIsLoading] =
     useState(true);
@@ -167,6 +196,7 @@ export default function AdminDashboardPage() {
         citizenCountResult,
         completedTodayResult,
         responderLocationResult,
+        responderPresenceResult,
       ] = await Promise.all([
         supabase
           .from("emergency_requests")
@@ -238,6 +268,20 @@ export default function AdminDashboardPage() {
           .order("updated_at", {
             ascending: false,
           }),
+
+        supabase
+          .from("responder_presence_locations")
+          .select(
+            `
+              responder_id,
+              latitude,
+              longitude,
+              updated_at
+            `,
+          )
+          .order("updated_at", {
+            ascending: false,
+          }),
       ]);
 
       if (emergencyResult.error) {
@@ -275,6 +319,13 @@ export default function AdminDashboardPage() {
         return;
       }
 
+      if (responderPresenceResult.error) {
+        setError(
+          responderPresenceResult.error.message,
+        );
+        return;
+      }
+
       const emergencyRows =
         emergencyResult.data ?? [];
 
@@ -286,6 +337,24 @@ export default function AdminDashboardPage() {
       setResponderLocations(
         responderLocationResult.data ?? [],
       );
+
+      setPresenceLocations(
+        responderPresenceResult.data ?? [],
+      );
+
+      try {
+        const analyticsData =
+          await getAdminAnalytics();
+
+        setAnalytics(analyticsData);
+      } catch (analyticsError) {
+        console.error(
+          "Unable to load analytics:",
+          analyticsError,
+        );
+
+        setAnalytics(null);
+      }
 
       setStats({
         pendingEmergencies:
@@ -327,148 +396,157 @@ export default function AdminDashboardPage() {
   );
 
   useEffect(() => {
-    let emergencyChannel:
+    let isCancelled = false;
+    let realtimeChannel:
       | ReturnType<typeof supabase.channel>
-      | undefined;
+      | null = null;
 
-    let responderChannel:
-      | ReturnType<typeof supabase.channel>
-      | undefined;
+    // A unique topic prevents channel collisions during
+    // React Strict Mode's development-only effect remount.
+    const channelId = Math.random()
+      .toString(36)
+      .slice(2);
 
-    let profileChannel:
-      | ReturnType<typeof supabase.channel>
-      | undefined;
-
-    let locationChannel:
-      | ReturnType<typeof supabase.channel>
-      | undefined;
+    const refreshDashboard = () => {
+      if (!isCancelled) {
+        void loadDashboardData();
+      }
+    };
 
     async function initializeAdmin() {
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
+      try {
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
 
-      if (userError || !user) {
-        router.replace("/login");
-        return;
+        if (isCancelled) {
+          return;
+        }
+
+        if (userError || !user) {
+          router.replace("/login");
+          return;
+        }
+
+        const {
+          data: adminData,
+          error: adminError,
+        } = await supabase
+          .from("admins")
+          .select("full_name, role")
+          .eq("auth_id", user.id)
+          .eq("status", "Active")
+          .maybeSingle();
+
+        if (isCancelled) {
+          return;
+        }
+
+        if (adminError) {
+          setError(adminError.message);
+          return;
+        }
+
+        if (!adminData) {
+          router.replace("/dashboard");
+          return;
+        }
+
+        setAdmin(adminData);
+        await loadDashboardData();
+
+        if (isCancelled) {
+          return;
+        }
+
+        // Register every postgres_changes callback first.
+        // Call subscribe() only once, after all listeners exist.
+        realtimeChannel = supabase
+          .channel(
+            `admin-dashboard-realtime-${channelId}`,
+          )
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "emergency_requests",
+            },
+            refreshDashboard,
+          )
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "responders",
+            },
+            refreshDashboard,
+          )
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "profiles",
+            },
+            refreshDashboard,
+          )
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "responder_locations",
+            },
+            refreshDashboard,
+          )
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "responder_presence_locations",
+            },
+            refreshDashboard,
+          )
+          .subscribe((status) => {
+            if (
+              status === "CHANNEL_ERROR" &&
+              !isCancelled
+            ) {
+              setError(
+                "Unable to connect to realtime dashboard updates. Refresh the page and try again.",
+              );
+            }
+          });
+      } catch (initializationError) {
+        if (!isCancelled) {
+          console.error(
+            "Unable to initialize admin dashboard:",
+            initializationError,
+          );
+
+          setError(
+            "Unable to initialize the admin dashboard. Please refresh the page and try again.",
+          );
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
       }
-
-      const {
-        data: adminData,
-        error: adminError,
-      } = await supabase
-        .from("admins")
-        .select("full_name, role")
-        .eq("auth_id", user.id)
-        .eq("status", "Active")
-        .maybeSingle();
-
-      if (adminError) {
-        setError(adminError.message);
-        setIsLoading(false);
-        return;
-      }
-
-      if (!adminData) {
-        router.replace("/dashboard");
-        return;
-      }
-
-      setAdmin(adminData);
-
-      await loadDashboardData();
-
-      emergencyChannel = supabase
-        .channel(
-          "admin-emergency-requests",
-        )
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table:
-              "emergency_requests",
-          },
-          async () => {
-            await loadDashboardData();
-          },
-        )
-        .subscribe();
-
-      responderChannel = supabase
-        .channel("admin-responders")
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "responders",
-          },
-          async () => {
-            await loadDashboardData();
-          },
-        )
-        .subscribe();
-
-      profileChannel = supabase
-        .channel("admin-profiles")
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "profiles",
-          },
-          async () => {
-            await loadDashboardData();
-          },
-        )
-        .subscribe();
-
-      locationChannel = supabase
-        .channel("admin-responder-locations")
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "responder_locations",
-          },
-          async () => {
-            await loadDashboardData();
-          },
-        )
-        .subscribe();
-
-      setIsLoading(false);
     }
 
-    initializeAdmin();
+    void initializeAdmin();
 
     return () => {
-      if (emergencyChannel) {
-        supabase.removeChannel(
-          emergencyChannel,
-        );
-      }
+      isCancelled = true;
 
-      if (responderChannel) {
-        supabase.removeChannel(
-          responderChannel,
-        );
-      }
-
-      if (profileChannel) {
-        supabase.removeChannel(
-          profileChannel,
-        );
-      }
-
-      if (locationChannel) {
-        supabase.removeChannel(
-          locationChannel,
+      if (realtimeChannel) {
+        void supabase.removeChannel(
+          realtimeChannel,
         );
       }
     };
@@ -679,6 +757,28 @@ export default function AdminDashboardPage() {
           </div>
 
           <div className="flex items-center gap-2">
+            <Link
+              href="/admin/responders"
+              className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-800"
+            >
+              <Users className="size-4" />
+
+              <span className="hidden sm:inline">
+                Responders
+              </span>
+            </Link>
+
+            <Link
+              href="/admin/reports"
+              className="inline-flex items-center gap-2 rounded-xl bg-red-700 px-4 py-3 text-sm font-bold text-white transition hover:bg-red-800"
+            >
+              <FileBarChart className="size-4" />
+        
+              <span className="hidden sm:inline">
+                Reports
+              </span>
+            </Link>
+
             <button
               type="button"
               onClick={handleRefresh}
@@ -754,48 +854,59 @@ export default function AdminDashboardPage() {
           </p>
         </section>
 
-        <section className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          <DashboardCard
-            title="Pending"
-            value={stats.pendingEmergencies}
-            icon={AlertTriangle}
-            tone="amber"
-          />
+        <section className="mt-8 grid gap-5 lg:grid-cols-2">
+          <Link
+            href="/admin/reports"
+            className="group rounded-3xl border border-red-200 bg-white p-6 shadow-sm transition hover:-translate-y-0.5 hover:border-red-300 hover:shadow-md"
+          >
+            <div className="flex items-start gap-4">
+              <span className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-red-100 text-red-700 transition group-hover:bg-red-700 group-hover:text-white">
+                <FileBarChart className="size-6" />
+              </span>
 
-          <DashboardCard
-            title="Active"
-            value={stats.activeEmergencies}
-            icon={Siren}
-            tone="red"
-          />
+              <div>
+                <h2 className="text-xl font-extrabold text-slate-900">
+                  Administrative Reports
+                </h2>
 
-          <DashboardCard
-            title="Available"
-            value={stats.availableResponders}
-            icon={Activity}
-            tone="emerald"
-          />
+                <p className="mt-2 text-sm leading-6 text-slate-500">
+                  View filtered emergency records,
+                  response statistics, responder
+                  performance, CSV exports, and
+                  printable reports.
+                </p>
 
-          <DashboardCard
-            title="Busy"
-            value={stats.busyResponders}
-            icon={UserRound}
-            tone="violet"
-          />
+                <span className="mt-4 inline-flex items-center gap-2 text-sm font-extrabold text-red-700">
+                  Open Reports
+                  <ExternalLink className="size-4" />
+                </span>
+              </div>
+            </div>
+          </Link>
 
-          <DashboardCard
-            title="Citizens"
-            value={stats.registeredCitizens}
-            icon={Users}
-            tone="blue"
-          />
+          <div className="rounded-3xl border border-slate-200 bg-slate-900 p-6 text-white shadow-sm">
+            <div className="flex items-start gap-4">
+              <span className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-white/10 text-white">
+                <ShieldCheck className="size-6" />
+              </span>
 
-          <DashboardCard
-            title="Completed Today"
-            value={stats.completedToday}
-            icon={CheckCircle2}
-            tone="emerald"
-          />
+              <div>
+                <h2 className="text-xl font-extrabold">
+                  Command Center Status
+                </h2>
+
+                <p className="mt-2 text-sm leading-6 text-slate-300">
+                  Monitor live emergencies, dispatch
+                  available responders, and review
+                  incident details from one dashboard.
+                </p>
+
+                <p className="mt-4 text-sm font-bold text-emerald-300">
+                  System monitoring active
+                </p>
+              </div>
+            </div>
+          </div>
         </section>
 
         <section className="mt-8 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-7">
@@ -827,6 +938,7 @@ export default function AdminDashboardPage() {
             <AdminCommandMap
               emergencies={emergencies}
               responderLocations={responderLocations}
+              presenceLocations={presenceLocations}
               responders={responders}
             />
           </div>
@@ -912,8 +1024,526 @@ export default function AdminDashboardPage() {
             </div>
           </div>
         </section>
+
+        <section className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          <DashboardCard
+            title="Pending"
+            value={stats.pendingEmergencies}
+            icon={AlertTriangle}
+            tone="amber"
+          />
+
+          <DashboardCard
+            title="Active"
+            value={stats.activeEmergencies}
+            icon={Siren}
+            tone="red"
+          />
+
+          <DashboardCard
+            title="Available"
+            value={stats.availableResponders}
+            icon={Activity}
+            tone="emerald"
+          />
+
+          <DashboardCard
+            title="Busy"
+            value={stats.busyResponders}
+            icon={UserRound}
+            tone="violet"
+          />
+
+          <DashboardCard
+            title="Citizens"
+            value={stats.registeredCitizens}
+            icon={Users}
+            tone="blue"
+          />
+
+          <DashboardCard
+            title="Completed Today"
+            value={stats.completedToday}
+            icon={CheckCircle2}
+            tone="emerald"
+          />
+        </section>
+
+        {analytics && (
+          <section className="mt-8 space-y-6">
+            <div>
+              <div className="flex items-center gap-3">
+                <span className="flex size-11 items-center justify-center rounded-xl bg-slate-900 text-white">
+                  <BarChart3 className="size-5" />
+                </span>
+
+                <div>
+                  <h2 className="text-2xl font-extrabold">
+                    Emergency Analytics
+                  </h2>
+
+                  <p className="mt-1 text-sm text-slate-500">
+                    Operational performance based
+                    on recorded emergency activity.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+              <PerformanceCard
+                title="Completion Rate"
+                value={`${analytics.stats.completionRate}%`}
+                description={`${analytics.stats.totalEmergencies} total recorded emergencies`}
+                icon={CheckCircle2}
+                tone="emerald"
+              />
+
+              <PerformanceCard
+                title="Average Acceptance"
+                value={formatDuration(
+                  analytics.stats
+                    .averageAcceptanceMinutes,
+                )}
+                description="Request submitted to responder acceptance"
+                icon={Timer}
+                tone="blue"
+              />
+
+              <PerformanceCard
+                title="Average Arrival"
+                value={formatDuration(
+                  analytics.stats
+                    .averageArrivalMinutes,
+                )}
+                description="Responder acceptance to scene arrival"
+                icon={TrendingUp}
+                tone="violet"
+              />
+
+              <PerformanceCard
+                title="Average Completion"
+                value={formatDuration(
+                  analytics.stats
+                    .averageCompletionMinutes,
+                )}
+                description="Scene arrival to incident completion"
+                icon={Clock3}
+                tone="amber"
+              />
+            </div>
+
+            <div className="grid gap-6 xl:grid-cols-[1.35fr_0.65fr]">
+              <EmergencyTrendChart
+                data={
+                  analytics.emergencyTrend
+                }
+              />
+
+              <EmergencyTypeBreakdown
+                data={
+                  analytics.emergencyTypes
+                }
+              />
+            </div>
+
+            <div className="grid gap-6 xl:grid-cols-[0.7fr_1.3fr]">
+              <ResponderAvailabilityChart
+                data={
+                  analytics.responderAvailability
+                }
+              />
+
+              <RecentEmergencyList
+                emergencies={
+                  analytics.recentEmergencies
+                }
+              />
+            </div>
+          </section>
+        )}
+
+        
       </section>
     </main>
+  );
+}
+
+
+type PerformanceCardProps = {
+  title: string;
+  value: string;
+  description: string;
+  icon: React.ComponentType<{
+    className?: string;
+  }>;
+  tone:
+    | "emerald"
+    | "blue"
+    | "violet"
+    | "amber";
+};
+
+function PerformanceCard({
+  title,
+  value,
+  description,
+  icon: Icon,
+  tone,
+}: PerformanceCardProps) {
+  const toneClasses = {
+    emerald:
+      "bg-emerald-100 text-emerald-700",
+    blue: "bg-blue-100 text-blue-700",
+    violet:
+      "bg-violet-100 text-violet-700",
+    amber:
+      "bg-amber-100 text-amber-700",
+  };
+
+  return (
+    <article className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-sm font-bold text-slate-500">
+            {title}
+          </p>
+
+          <p className="mt-3 text-3xl font-extrabold text-slate-900">
+            {value}
+          </p>
+        </div>
+
+        <span
+          className={`flex size-11 shrink-0 items-center justify-center rounded-xl ${toneClasses[tone]}`}
+        >
+          <Icon className="size-5" />
+        </span>
+      </div>
+
+      <p className="mt-4 text-xs leading-5 text-slate-400">
+        {description}
+      </p>
+    </article>
+  );
+}
+
+type EmergencyTrendChartProps = {
+  data: AdminAnalyticsData["emergencyTrend"];
+};
+
+function EmergencyTrendChart({
+  data,
+}: EmergencyTrendChartProps) {
+  const maximum = Math.max(
+    1,
+    ...data.map((item) => item.count),
+  );
+
+  const total = data.reduce(
+    (sum, item) => sum + item.count,
+    0,
+  );
+
+  return (
+    <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-7">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-xl font-extrabold">
+            Emergency Requests
+          </h3>
+
+          <p className="mt-1 text-sm text-slate-500">
+            Requests received during the last
+            seven days.
+          </p>
+        </div>
+
+        <div className="rounded-2xl bg-red-50 px-4 py-3 text-right">
+          <p className="text-xs font-bold uppercase tracking-wider text-red-500">
+            7-day total
+          </p>
+
+          <p className="mt-1 text-2xl font-extrabold text-red-700">
+            {total}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-8 flex h-64 items-end gap-3">
+        {data.map((item) => {
+          const height =
+            item.count === 0
+              ? 4
+              : Math.max(
+                  12,
+                  (item.count / maximum) *
+                    100,
+                );
+
+          return (
+            <div
+              key={item.date}
+              className="flex min-w-0 flex-1 flex-col items-center justify-end"
+            >
+              <span className="mb-2 text-xs font-extrabold text-slate-600">
+                {item.count}
+              </span>
+
+              <div className="flex h-44 w-full items-end rounded-xl bg-slate-100 p-1">
+                <div
+                  className="w-full rounded-lg bg-gradient-to-t from-red-700 to-red-500 transition-all"
+                  style={{
+                    height: `${height}%`,
+                  }}
+                  title={`${item.label}: ${item.count} emergencies`}
+                />
+              </div>
+
+              <span className="mt-3 text-xs font-bold text-slate-500">
+                {item.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+type EmergencyTypeBreakdownProps = {
+  data: AdminAnalyticsData["emergencyTypes"];
+};
+
+function EmergencyTypeBreakdown({
+  data,
+}: EmergencyTypeBreakdownProps) {
+  const total = data.reduce(
+    (sum, item) => sum + item.count,
+    0,
+  );
+
+  const visibleData = data.slice(0, 6);
+
+  return (
+    <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-7">
+      <div className="flex items-center gap-3">
+        <span className="flex size-11 items-center justify-center rounded-xl bg-violet-100 text-violet-700">
+          <PieChart className="size-5" />
+        </span>
+
+        <div>
+          <h3 className="text-xl font-extrabold">
+            Emergency Types
+          </h3>
+
+          <p className="mt-1 text-sm text-slate-500">
+            Most frequently reported categories.
+          </p>
+        </div>
+      </div>
+
+      {visibleData.length === 0 ? (
+        <p className="mt-8 text-sm text-slate-500">
+          No emergency data recorded yet.
+        </p>
+      ) : (
+        <div className="mt-7 space-y-5">
+          {visibleData.map((item) => {
+            const percentage =
+              total > 0
+                ? Math.round(
+                    (item.count / total) *
+                      100,
+                  )
+                : 0;
+
+            return (
+              <div
+                key={item.emergencyType}
+              >
+                <div className="flex items-center justify-between gap-4">
+                  <p className="truncate text-sm font-bold text-slate-700">
+                    {item.emergencyType}
+                  </p>
+
+                  <p className="shrink-0 text-sm font-extrabold text-slate-900">
+                    {item.count}{" "}
+                    <span className="font-semibold text-slate-400">
+                      ({percentage}%)
+                    </span>
+                  </p>
+                </div>
+
+                <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className="h-full rounded-full bg-violet-600"
+                    style={{
+                      width: `${percentage}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+type ResponderAvailabilityChartProps = {
+  data: AdminAnalyticsData["responderAvailability"];
+};
+
+function ResponderAvailabilityChart({
+  data,
+}: ResponderAvailabilityChartProps) {
+  const maximum = Math.max(
+    1,
+    ...data.map((item) => item.count),
+  );
+
+  return (
+    <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-7">
+      <h3 className="text-xl font-extrabold">
+        Responder Availability
+      </h3>
+
+      <p className="mt-1 text-sm text-slate-500">
+        Current operational availability.
+      </p>
+
+      <div className="mt-7 space-y-6">
+        {data.map((item) => {
+          const percentage =
+            (item.count / maximum) * 100;
+
+          return (
+            <div key={item.availability}>
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-sm font-bold text-slate-700">
+                  {item.availability}
+                </p>
+
+                <p className="text-lg font-extrabold text-slate-900">
+                  {item.count}
+                </p>
+              </div>
+
+              <div className="mt-2 h-3 overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className={`h-full rounded-full ${
+                    item.availability ===
+                    "Available"
+                      ? "bg-emerald-600"
+                      : item.availability ===
+                          "Busy"
+                        ? "bg-amber-500"
+                        : "bg-slate-500"
+                  }`}
+                  style={{
+                    width: `${Math.max(
+                      item.count === 0
+                        ? 0
+                        : 8,
+                      percentage,
+                    )}%`,
+                  }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+type RecentEmergencyListProps = {
+  emergencies: AdminAnalyticsData["recentEmergencies"];
+};
+
+function RecentEmergencyList({
+  emergencies,
+}: RecentEmergencyListProps) {
+  return (
+    <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-7">
+      <div>
+        <h3 className="text-xl font-extrabold">
+          Recent Emergencies
+        </h3>
+
+        <p className="mt-1 text-sm text-slate-500">
+          Latest emergency activity across the
+          system.
+        </p>
+      </div>
+
+      {emergencies.length === 0 ? (
+        <div className="mt-7 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-10 text-center">
+          <ShieldCheck className="mx-auto size-10 text-slate-300" />
+
+          <p className="mt-3 font-bold text-slate-600">
+            No emergency records yet
+          </p>
+        </div>
+      ) : (
+        <div className="mt-6 divide-y divide-slate-100">
+          {emergencies.map(
+            (emergency) => (
+              <article
+                key={emergency.id}
+                className="flex flex-col gap-3 py-4 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-3">
+                    <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-red-100 text-red-700">
+                      <Siren className="size-4" />
+                    </span>
+
+                    <div className="min-w-0">
+                      <p className="truncate font-extrabold">
+                        {emergency.emergency_type ||
+                          "Emergency Request"}
+                      </p>
+
+                      <p className="mt-1 truncate text-xs text-slate-500">
+                        {emergency.address ||
+                          "Address unavailable"}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-4 sm:flex-col sm:items-end">
+                  <StatusBadge
+                    status={
+                      emergency.status ||
+                      "Pending"
+                    }
+                  />
+
+                  <p className="text-xs text-slate-400">
+                    {formatDateTime(
+                      emergency.created_at,
+                    )}
+                  </p>
+
+                  <Link
+                    href={`/admin/incidents/${emergency.id}`}
+                    className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white transition hover:bg-slate-800"
+                  >
+                    <Eye className="size-4" />
+                    View Details
+                  </Link>
+                </div>
+              </article>
+            ),
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -1093,17 +1723,27 @@ function EmergencyCard({
         </div>
       )}
 
-      {mapUrl && (
-        <a
-          href={mapUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-4 inline-flex items-center gap-2 text-sm font-bold text-red-700 hover:text-red-800"
+      <div className="mt-5 flex flex-wrap gap-3">
+        {mapUrl && (
+          <a
+            href={mapUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700 transition hover:bg-red-100"
+          >
+            <ExternalLink className="size-4" />
+            View Location
+          </a>
+        )}
+
+        <Link
+          href={`/admin/incidents/${emergency.id}`}
+          className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white transition hover:bg-slate-800"
         >
-          View incident location
-          <ExternalLink className="size-4" />
-        </a>
-      )}
+          <Eye className="size-4" />
+          View Details
+        </Link>
+      </div>
     </article>
   );
 }
@@ -1262,6 +1902,10 @@ function getStatusClasses(
       return "bg-orange-100 text-orange-800";
     case "In Progress":
       return "bg-red-100 text-red-800";
+    case "Completed":
+      return "bg-emerald-100 text-emerald-800";
+    case "Cancelled":
+      return "bg-slate-200 text-slate-700";
     default:
       return "bg-slate-100 text-slate-700";
   }
@@ -1293,6 +1937,33 @@ function createMapUrl(
   }
 
   return `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`;
+}
+
+function formatDuration(
+  minutes: number | null,
+) {
+  if (minutes === null) {
+    return "No data";
+  }
+
+  if (minutes < 1) {
+    return "< 1 min";
+  }
+
+  if (minutes < 60) {
+    return `${Math.round(minutes)} min`;
+  }
+
+  const hours = Math.floor(
+    minutes / 60,
+  );
+
+  const remainingMinutes =
+    Math.round(minutes % 60);
+
+  return remainingMinutes > 0
+    ? `${hours}h ${remainingMinutes}m`
+    : `${hours}h`;
 }
 
 function formatDateTime(

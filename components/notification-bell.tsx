@@ -71,18 +71,17 @@ export default function NotificationBell() {
         .limit(20);
 
       if (notificationError) {
-        setError(
-          notificationError.message,
-        );
-        return;
+        throw notificationError;
       }
 
-      setNotifications(data ?? []);
+      return data ?? [];
     },
     [],
   );
 
   useEffect(() => {
+    let isCancelled = false;
+
     let channel:
       | ReturnType<
           typeof supabase.channel
@@ -90,68 +89,164 @@ export default function NotificationBell() {
       | undefined;
 
     async function initializeNotifications() {
-      setError("");
-
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
-
-      if (userError || !user) {
-        setIsLoading(false);
-        return;
+      if (!isCancelled) {
+        setError("");
+        setIsLoading(true);
       }
 
-      const {
-        data: profile,
-        error: profileError,
-      } = await supabase
-        .from("profiles")
-        .select("id")
-        .eq("auth_id", user.id)
-        .maybeSingle();
+      try {
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
 
-      if (profileError || !profile) {
+        if (isCancelled) {
+          return;
+        }
+
+        if (userError || !user) {
+          setIsLoading(false);
+          return;
+        }
+
+        const {
+          data: profile,
+          error: profileError,
+        } = await supabase
+          .from("profiles")
+          .select("id")
+          .eq("auth_id", user.id)
+          .maybeSingle();
+
+        if (isCancelled) {
+          return;
+        }
+
+        if (profileError || !profile) {
+          setError(
+            profileError?.message ??
+              "Citizen profile not found.",
+          );
+          setIsLoading(false);
+          return;
+        }
+
+        setProfileId(profile.id);
+
+        const initialNotifications =
+          await loadNotifications(profile.id);
+
+        if (isCancelled) {
+          return;
+        }
+
+        setNotifications(
+          initialNotifications,
+        );
+
+        const channelName = [
+          "notification-bell",
+          profile.id,
+          Date.now().toString(),
+          Math.random()
+            .toString(36)
+            .slice(2),
+        ].join("-");
+
+        channel = supabase
+          .channel(channelName)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "notifications",
+              filter: `profile_id=eq.${profile.id}`,
+            },
+            () => {
+              void refreshNotifications(
+                profile.id,
+              );
+            },
+          )
+          .subscribe((status) => {
+            if (
+              isCancelled ||
+              status !== "CHANNEL_ERROR"
+            ) {
+              return;
+            }
+
+            setError(
+              "Unable to connect to live notification updates.",
+            );
+          });
+
+        if (isCancelled && channel) {
+          void supabase.removeChannel(
+            channel,
+          );
+          channel = undefined;
+          return;
+        }
+
+        setIsLoading(false);
+      } catch (initializationError) {
+        if (isCancelled) {
+          return;
+        }
+
         setError(
-          profileError?.message ??
-            "Citizen profile not found.",
+          getErrorMessage(
+            initializationError,
+            "Unable to load notifications.",
+          ),
         );
         setIsLoading(false);
-        return;
       }
-
-      setProfileId(profile.id);
-
-      await loadNotifications(profile.id);
-
-      channel = supabase
-        .channel(
-          `notification-bell-${profile.id}`,
-        )
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "notifications",
-            filter: `profile_id=eq.${profile.id}`,
-          },
-          async () => {
-            await loadNotifications(
-              profile.id,
-            );
-          },
-        )
-        .subscribe();
-
-      setIsLoading(false);
     }
 
-    initializeNotifications();
+    async function refreshNotifications(
+      selectedProfileId: string,
+    ) {
+      try {
+        const updatedNotifications =
+          await loadNotifications(
+            selectedProfileId,
+          );
+
+        if (isCancelled) {
+          return;
+        }
+
+        setNotifications(
+          updatedNotifications,
+        );
+        setError("");
+      } catch (refreshError) {
+        if (isCancelled) {
+          return;
+        }
+
+        setError(
+          getErrorMessage(
+            refreshError,
+            "Unable to refresh notifications.",
+          ),
+        );
+      }
+    }
+
+    void initializeNotifications();
 
     return () => {
+      isCancelled = true;
+
       if (channel) {
-        supabase.removeChannel(channel);
+        void supabase.removeChannel(
+          channel,
+        );
+        channel = undefined;
       }
     };
   }, [loadNotifications]);
@@ -196,6 +291,8 @@ export default function NotificationBell() {
       return;
     }
 
+    setError("");
+
     const { error: updateError } =
       await supabase
         .from("notifications")
@@ -228,7 +325,8 @@ export default function NotificationBell() {
   async function handleMarkAllRead() {
     if (
       !profileId ||
-      unreadCount === 0
+      unreadCount === 0 ||
+      isUpdating
     ) {
       return;
     }
@@ -236,29 +334,33 @@ export default function NotificationBell() {
     setError("");
     setIsUpdating(true);
 
-    const { error: updateError } =
-      await supabase
-        .from("notifications")
-        .update({
+    try {
+      const { error: updateError } =
+        await supabase
+          .from("notifications")
+          .update({
+            is_read: true,
+          })
+          .eq(
+            "profile_id",
+            profileId,
+          )
+          .eq("is_read", false);
+
+      if (updateError) {
+        setError(updateError.message);
+        return;
+      }
+
+      setNotifications((current) =>
+        current.map((item) => ({
+          ...item,
           is_read: true,
-        })
-        .eq("profile_id", profileId)
-        .eq("is_read", false);
-
-    if (updateError) {
-      setError(updateError.message);
+        })),
+      );
+    } finally {
       setIsUpdating(false);
-      return;
     }
-
-    setNotifications((current) =>
-      current.map((item) => ({
-        ...item,
-        is_read: true,
-      })),
-    );
-
-    setIsUpdating(false);
   }
 
   return (
@@ -274,6 +376,7 @@ export default function NotificationBell() {
             : "Notifications"
         }
         aria-expanded={isOpen}
+        aria-haspopup="dialog"
         onClick={() =>
           setIsOpen((current) => !current)
         }
@@ -291,7 +394,11 @@ export default function NotificationBell() {
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 z-[1000] mt-3 w-[min(92vw,400px)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        <div
+          role="dialog"
+          aria-label="Notifications"
+          className="absolute right-0 z-[1000] mt-3 w-[min(92vw,400px)] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+        >
           <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
             <div>
               <h2 className="font-extrabold text-slate-900">
@@ -357,7 +464,7 @@ export default function NotificationBell() {
                     key={notification.id}
                     type="button"
                     onClick={() =>
-                      markNotificationRead(
+                      void markNotificationRead(
                         notification,
                       )
                     }
@@ -423,10 +530,31 @@ export default function NotificationBell() {
   );
 }
 
+function getErrorMessage(
+  error: unknown,
+  fallback: string,
+) {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+
+  return fallback;
+}
+
 function formatNotificationTime(
   dateValue: string,
 ) {
   const date = new Date(dateValue);
+
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown time";
+  }
+
   const difference =
     Date.now() - date.getTime();
 

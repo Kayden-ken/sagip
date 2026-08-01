@@ -2,18 +2,14 @@
 
 import "leaflet/dist/leaflet.css";
 
-import L from "leaflet";
+import * as L from "leaflet";
 import {
-  CircleMarker,
-  MapContainer,
-  Marker,
-  Popup,
-  TileLayer,
-  useMap,
-} from "react-leaflet";
-import { useEffect, useMemo } from "react";
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
-type EmergencyMapItem = {
+type EmergencyRequest = {
   id: string;
   emergency_type: string | null;
   description: string | null;
@@ -22,18 +18,12 @@ type EmergencyMapItem = {
   longitude: number | string | null;
   status: string | null;
   responder_id: string | null;
+  profile_id: string;
   created_at: string;
+  accepted_at: string | null;
 };
 
-type ResponderLocationMapItem = {
-  responder_id: string;
-  emergency_request_id: string;
-  latitude: number | string;
-  longitude: number | string;
-  updated_at: string;
-};
-
-type ResponderMapItem = {
+type Responder = {
   id: string;
   full_name: string | null;
   agency: string | null;
@@ -41,325 +31,645 @@ type ResponderMapItem = {
   availability: string | null;
 };
 
-type AdminCommandMapProps = {
-  emergencies: EmergencyMapItem[];
-  responderLocations: ResponderLocationMapItem[];
-  responders: ResponderMapItem[];
+type ResponderLocation = {
+  responder_id: string;
+  emergency_request_id: string;
+  latitude: number | string;
+  longitude: number | string;
+  updated_at: string;
 };
 
-const emergencyMarkerIcon = L.icon({
-  iconUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  iconRetinaUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  shadowUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-  shadowSize: [41, 41],
-});
+type ResponderPresenceLocation = {
+  responder_id: string;
+  latitude: number | string;
+  longitude: number | string;
+  updated_at: string;
+};
+
+type AdminCommandMapProps = {
+  emergencies: EmergencyRequest[];
+  responderLocations: ResponderLocation[];
+  presenceLocations: ResponderPresenceLocation[];
+  responders: Responder[];
+};
+
+type Coordinate = {
+  latitude: number;
+  longitude: number;
+};
+
+const DEFAULT_CENTER: L.LatLngExpression = [
+  12.8797,
+  121.774,
+];
+
+const DEFAULT_ZOOM = 6;
 
 export default function AdminCommandMap({
   emergencies,
   responderLocations,
+  presenceLocations,
   responders,
 }: AdminCommandMapProps) {
-  const responderMap = useMemo(
-    () =>
-      Object.fromEntries(
+  const containerRef =
+    useRef<HTMLDivElement | null>(null);
+
+  const mapRef =
+    useRef<L.Map | null>(null);
+
+  const overlayLayerRef =
+    useRef<L.LayerGroup | null>(null);
+
+
+  // Map filters
+  const [
+    showEmergencies,
+    setShowEmergencies,
+  ] = useState(true);
+
+  const [
+    showPresence,
+    setShowPresence,
+  ] = useState(true);
+
+  const [
+    showResponders,
+    setShowResponders,
+  ] = useState(true);
+
+  const [
+    showRoutes,
+    setShowRoutes,
+  ] = useState(true);
+
+
+  /*
+   * Initialize Leaflet map once
+   */
+  useEffect(() => {
+    const container =
+      containerRef.current;
+
+    if (
+      !container ||
+      mapRef.current
+    ) {
+      return;
+    }
+
+
+    const map = L.map(container, {
+      center: DEFAULT_CENTER,
+      zoom: DEFAULT_ZOOM,
+      zoomControl: true,
+      scrollWheelZoom: true,
+    });
+
+
+    L.tileLayer(
+      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      {
+        attribution:
+          "&copy; OpenStreetMap contributors",
+        maxZoom: 19,
+      },
+    ).addTo(map);
+
+
+    const overlayLayer =
+      L.layerGroup().addTo(map);
+
+
+    mapRef.current = map;
+
+    overlayLayerRef.current =
+      overlayLayer;
+
+
+    const resize =
+      window.requestAnimationFrame(
+        () => {
+          map.invalidateSize();
+        },
+      );
+
+
+    return () => {
+      window.cancelAnimationFrame(
+        resize,
+      );
+
+      overlayLayer.clearLayers();
+
+      map.remove();
+
+      mapRef.current = null;
+
+      overlayLayerRef.current =
+        null;
+
+
+      const leafletContainer =
+        container as HTMLDivElement & {
+          _leaflet_id?: number;
+        };
+
+      delete leafletContainer._leaflet_id;
+    };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const layer =
+      overlayLayerRef.current;
+
+    if (!map || !layer) {
+      return;
+    }
+
+    layer.clearLayers();
+
+
+    const responderMap =
+      new Map(
         responders.map((responder) => [
           responder.id,
           responder,
         ]),
-      ) as Record<string, ResponderMapItem>,
-    [responders],
-  );
+      );
 
-  const validEmergencies = useMemo(
-    () =>
-      emergencies
-        .map((emergency) => {
-          const latitude = Number(
-            emergency.latitude,
-          );
 
-          const longitude = Number(
-            emergency.longitude,
-          );
+    const emergencyCoordinates =
+      new Map<string, Coordinate>();
 
-          if (
-            !Number.isFinite(latitude) ||
-            !Number.isFinite(longitude)
-          ) {
-            return null;
-          }
 
-          return {
-            ...emergency,
-            latitude,
-            longitude,
-          };
-        })
-        .filter(
-          (
-            emergency,
-          ): emergency is EmergencyMapItem & {
-            latitude: number;
-            longitude: number;
-          } => emergency !== null,
-        ),
-    [emergencies],
-  );
+    const points: L.LatLngExpression[] =
+      [];
 
-  const validResponderLocations =
-    useMemo(
-      () =>
-        responderLocations
-          .map((location) => {
-            const latitude = Number(
-              location.latitude,
+
+    /*
+     * EMERGENCY MARKERS
+     */
+    if (showEmergencies) {
+      emergencies.forEach(
+        (emergency) => {
+          const coordinate =
+            readCoordinate(
+              emergency.latitude,
+              emergency.longitude,
             );
 
-            const longitude = Number(
+
+          if (!coordinate) {
+            return;
+          }
+
+
+          emergencyCoordinates.set(
+            emergency.id,
+            coordinate,
+          );
+
+
+          points.push([
+            coordinate.latitude,
+            coordinate.longitude,
+          ]);
+
+
+          L.circleMarker(
+            [
+              coordinate.latitude,
+              coordinate.longitude,
+            ],
+            {
+              radius: 10,
+              color: "#ffffff",
+              weight: 3,
+              fillColor: "#2563eb",
+              fillOpacity: 1,
+            },
+          )
+            .bindPopup(
+              createEmergencyPopup(
+                emergency,
+              ),
+            )
+            .addTo(layer);
+        },
+      );
+    }
+
+
+    /*
+     * AVAILABLE RESPONDER COVERAGE
+     */
+    if (showPresence) {
+      presenceLocations.forEach(
+        (location) => {
+          const coordinate =
+            readCoordinate(
+              location.latitude,
               location.longitude,
             );
 
-            if (
-              !Number.isFinite(latitude) ||
-              !Number.isFinite(longitude)
-            ) {
-              return null;
-            }
 
-            return {
-              ...location,
-              latitude,
-              longitude,
-            };
-          })
-          .filter(
-            (
-              location,
-            ): location is ResponderLocationMapItem & {
-              latitude: number;
-              longitude: number;
-            } => location !== null,
-          ),
-      [responderLocations],
+          if (!coordinate) {
+            return;
+          }
+
+
+          points.push([
+            coordinate.latitude,
+            coordinate.longitude,
+          ]);
+
+
+          L.circle(
+            [
+              coordinate.latitude,
+              coordinate.longitude,
+            ],
+            {
+              radius: 800,
+              color: "#16a34a",
+              weight: 2,
+              fillColor: "#22c55e",
+              fillOpacity: 0.22,
+            },
+          )
+            .bindPopup(
+              createPresencePopup(
+                location,
+              ),
+            )
+            .addTo(layer);
+        },
+      );
+    }
+
+
+
+    /*
+     * ACTIVE RESPONDER LOCATIONS
+     */
+    const latestLocations =
+      new Map<string, ResponderLocation>();
+
+
+    responderLocations.forEach(
+      (location) => {
+        const key =
+          `${location.responder_id}:${location.emergency_request_id}`;
+
+
+        const current =
+          latestLocations.get(key);
+
+
+        if (
+          !current ||
+          new Date(
+            location.updated_at,
+          ).getTime() >
+            new Date(
+              current.updated_at,
+            ).getTime()
+        ) {
+          latestLocations.set(
+            key,
+            location,
+          );
+        }
+      },
     );
 
-  const defaultCenter:
-    [number, number] =
-    validEmergencies.length > 0
-      ? [
-          validEmergencies[0].latitude,
-          validEmergencies[0].longitude,
-        ]
-      : validResponderLocations.length > 0
-        ? [
-            validResponderLocations[0]
-              .latitude,
-            validResponderLocations[0]
-              .longitude,
-          ]
-        : [12.8797, 121.774];
 
-  const allCoordinates = [
-    ...validEmergencies.map(
-      (emergency) =>
-        [
-          emergency.latitude,
-          emergency.longitude,
-        ] as [number, number],
-    ),
-    ...validResponderLocations.map(
-      (location) =>
-        [
-          location.latitude,
-          location.longitude,
-        ] as [number, number],
-    ),
-  ];
+
+    if (showResponders) {
+      latestLocations.forEach(
+        (location) => {
+          const coordinate =
+            readCoordinate(
+              location.latitude,
+              location.longitude,
+            );
+
+
+          if (!coordinate) {
+            return;
+          }
+
+
+          points.push([
+            coordinate.latitude,
+            coordinate.longitude,
+          ]);
+
+
+          const responder =
+            responderMap.get(
+              location.responder_id,
+            ) ?? null;
+
+
+
+          L.circleMarker(
+            [
+              coordinate.latitude,
+              coordinate.longitude,
+            ],
+            {
+              radius: 11,
+              color: "#ffffff",
+              weight: 4,
+              fillColor: "#16a34a",
+              fillOpacity: 1,
+            },
+          )
+            .bindPopup(
+              createResponderPopup(
+                responder,
+                location,
+              ),
+            )
+            .addTo(layer);
+
+
+
+          const emergencyLocation =
+            emergencyCoordinates.get(
+              location.emergency_request_id,
+            );
+
+
+
+          if (
+            showRoutes &&
+            emergencyLocation
+          ) {
+            L.polyline(
+              [
+                [
+                  coordinate.latitude,
+                  coordinate.longitude,
+                ],
+                [
+                  emergencyLocation.latitude,
+                  emergencyLocation.longitude,
+                ],
+              ],
+              {
+                color: "#dc2626",
+                weight: 4,
+                dashArray:
+                  "8 10",
+              },
+            ).addTo(layer);
+          }
+        },
+      );
+    }
+
+
+
+    /*
+     * Auto zoom
+     */
+    if (points.length === 0) {
+      map.setView(
+        DEFAULT_CENTER,
+        DEFAULT_ZOOM,
+      );
+    } else if (
+      points.length === 1
+    ) {
+      map.setView(
+        points[0],
+        16,
+      );
+    } else {
+      map.fitBounds(
+        L.latLngBounds(points),
+        {
+          padding: [40, 40],
+          maxZoom: 16,
+        },
+      );
+    }
+
+
+    window.requestAnimationFrame(
+      () => {
+        map.invalidateSize();
+      },
+    );
+
+
+  }, [
+    emergencies,
+    responderLocations,
+    presenceLocations,
+    responders,
+    showEmergencies,
+    showPresence,
+    showResponders,
+    showRoutes,
+  ]);
+
+
 
   return (
-    <MapContainer
-      center={defaultCenter}
-      zoom={6}
-      scrollWheelZoom
-      className="h-[560px] w-full rounded-2xl border border-slate-200"
-    >
-      <TileLayer
-        attribution="&copy; OpenStreetMap contributors"
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+    <div>
+      <div className="mb-4 flex flex-wrap gap-3 text-sm font-bold">
+
+        <label className="flex items-center gap-2 rounded-xl bg-blue-50 px-3 py-2 text-blue-700">
+          <input
+            type="checkbox"
+            checked={showEmergencies}
+            onChange={(event) =>
+              setShowEmergencies(
+                event.target.checked,
+              )
+            }
+          />
+          Emergencies
+        </label>
+
+
+        <label className="flex items-center gap-2 rounded-xl bg-green-50 px-3 py-2 text-green-700">
+          <input
+            type="checkbox"
+            checked={showPresence}
+            onChange={(event) =>
+              setShowPresence(
+                event.target.checked,
+              )
+            }
+          />
+          Available Responders
+        </label>
+
+
+        <label className="flex items-center gap-2 rounded-xl bg-emerald-50 px-3 py-2 text-emerald-700">
+          <input
+            type="checkbox"
+            checked={showResponders}
+            onChange={(event) =>
+              setShowResponders(
+                event.target.checked,
+              )
+            }
+          />
+          Active Responders
+        </label>
+
+
+        <label className="flex items-center gap-2 rounded-xl bg-red-50 px-3 py-2 text-red-700">
+          <input
+            type="checkbox"
+            checked={showRoutes}
+            onChange={(event) =>
+              setShowRoutes(
+                event.target.checked,
+              )
+            }
+          />
+          Response Routes
+        </label>
+
+      </div>
+
+
+      <div
+        ref={containerRef}
+        aria-label="SAGIP live command map"
+        className="h-[560px] w-full rounded-2xl border border-slate-200"
       />
-
-      <FitMapToMarkers
-        coordinates={allCoordinates}
-        fallbackCenter={defaultCenter}
-      />
-
-      {validEmergencies.map(
-        (emergency) => {
-          const assignedResponder =
-            emergency.responder_id
-              ? responderMap[
-                  emergency.responder_id
-                ]
-              : null;
-
-          return (
-            <Marker
-              key={emergency.id}
-              position={[
-                emergency.latitude,
-                emergency.longitude,
-              ]}
-              icon={emergencyMarkerIcon}
-            >
-              <Popup>
-                <div className="min-w-56">
-                  <p className="font-bold">
-                    {emergency.emergency_type ||
-                      "Emergency Request"}
-                  </p>
-
-                  <p className="mt-1 text-sm">
-                    Status:{" "}
-                    {emergency.status ||
-                      "Pending"}
-                  </p>
-
-                  <p className="mt-2 text-sm">
-                    {emergency.address ||
-                      "Address unavailable"}
-                  </p>
-
-                  {emergency.description && (
-                    <p className="mt-2 text-sm">
-                      {
-                        emergency.description
-                      }
-                    </p>
-                  )}
-
-                  <p className="mt-2 text-xs text-slate-500">
-                    Reported{" "}
-                    {formatDateTime(
-                      emergency.created_at,
-                    )}
-                  </p>
-
-                  <p className="mt-2 text-sm font-semibold">
-                    Responder:{" "}
-                    {assignedResponder
-                      ? assignedResponder.full_name ||
-                        "Emergency Responder"
-                      : "Not assigned"}
-                  </p>
-                </div>
-              </Popup>
-            </Marker>
-          );
-        },
-      )}
-
-      {validResponderLocations.map(
-        (location) => {
-          const responder =
-            responderMap[
-              location.responder_id
-            ];
-
-          return (
-            <CircleMarker
-              key={`${location.responder_id}-${location.emergency_request_id}`}
-              center={[
-                location.latitude,
-                location.longitude,
-              ]}
-              radius={11}
-              pathOptions={{
-                color: "#ffffff",
-                weight: 4,
-                fillColor: "#16a34a",
-                fillOpacity: 1,
-              }}
-            >
-              <Popup>
-                <div className="min-w-52">
-                  <p className="font-bold">
-                    {responder?.full_name ||
-                      "Emergency Responder"}
-                  </p>
-
-                  <p className="mt-1 text-sm">
-                    {responder?.agency ||
-                      "Emergency Response Agency"}
-                  </p>
-
-                  <p className="mt-2 text-sm">
-                    Status:{" "}
-                    {responder?.status ||
-                      "Unknown"}
-                  </p>
-
-                  <p className="mt-1 text-sm">
-                    Availability:{" "}
-                    {responder?.availability ||
-                      "Unknown"}
-                  </p>
-
-                  <p className="mt-2 text-xs text-slate-500">
-                    GPS updated{" "}
-                    {formatDateTime(
-                      location.updated_at,
-                    )}
-                  </p>
-                </div>
-              </Popup>
-            </CircleMarker>
-          );
-        },
-      )}
-    </MapContainer>
+    </div>
   );
 }
 
-type FitMapToMarkersProps = {
-  coordinates: [number, number][];
-  fallbackCenter: [number, number];
-};
 
-function FitMapToMarkers({
-  coordinates,
-  fallbackCenter,
-}: FitMapToMarkersProps) {
-  const map = useMap();
 
-  useEffect(() => {
-    if (coordinates.length === 0) {
-      map.setView(fallbackCenter, 6);
-      return;
-    }
+function readCoordinate(
+  latitudeValue:
+    | number
+    | string
+    | null,
+  longitudeValue:
+    | number
+    | string
+    | null,
+): Coordinate | null {
 
-    if (coordinates.length === 1) {
-      map.setView(coordinates[0], 16);
-      return;
-    }
+  if (
+    latitudeValue === null ||
+    longitudeValue === null
+  ) {
+    return null;
+  }
 
-    map.fitBounds(coordinates, {
-      padding: [55, 55],
-      maxZoom: 16,
-    });
-  }, [
-    coordinates,
-    fallbackCenter,
-    map,
-  ]);
 
-  return null;
+  const latitude =
+    Number(latitudeValue);
+
+  const longitude =
+    Number(longitudeValue);
+
+
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude)
+  ) {
+    return null;
+  }
+
+
+  return {
+    latitude,
+    longitude,
+  };
 }
+
+
+
+function createEmergencyPopup(
+  emergency: EmergencyRequest,
+) {
+  return `
+    <strong>
+      🚨 ${
+        emergency.emergency_type ||
+        "Emergency"
+      }
+    </strong>
+    <br/>
+    Status:
+    ${emergency.status || "Pending"}
+    <br/>
+    Location:
+    ${emergency.address || "Unknown"}
+  `;
+}
+
+
+
+function createPresencePopup(
+  location: ResponderPresenceLocation,
+) {
+  return `
+    <strong>
+      🟢 Available Responder Nearby
+    </strong>
+    <br/>
+    Last update:
+    ${formatDateTime(
+      location.updated_at,
+    )}
+  `;
+}
+
+
+
+function createResponderPopup(
+  responder: Responder | null,
+  location: ResponderLocation,
+) {
+  return `
+    <strong>
+      🚑 ${
+        responder?.full_name ||
+        "Responder"
+      }
+    </strong>
+    <br/>
+    Agency:
+    ${
+      responder?.agency ||
+      "Unknown"
+    }
+    <br/>
+    Availability:
+    ${
+      responder?.availability ||
+      "Unknown"
+    }
+    <br/>
+    Status:
+    ${
+      responder?.status ||
+      "Unknown"
+    }
+    <br/>
+    Updated:
+    ${formatDateTime(
+      location.updated_at,
+    )}
+  `;
+}
+
+
 
 function formatDateTime(
   dateValue: string,
@@ -370,5 +680,7 @@ function formatDateTime(
       dateStyle: "medium",
       timeStyle: "short",
     },
-  ).format(new Date(dateValue));
+  ).format(
+    new Date(dateValue),
+  );
 }

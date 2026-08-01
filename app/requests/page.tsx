@@ -9,6 +9,7 @@ import {
   CircleDot,
   Clock3,
   ExternalLink,
+  Gauge,
   LoaderCircle,
   MapPin,
   Navigation,
@@ -591,6 +592,64 @@ export default function RequestsPage() {
       : null;
   }, [responderLocation]);
 
+
+  const trackingMetrics = useMemo(() => {
+    if (
+      latitude === null ||
+      longitude === null ||
+      responderLatitude === null ||
+      responderLongitude === null
+    ) {
+      return null;
+    }
+
+    const straightLineKilometers =
+      calculateDistanceKilometers(
+        responderLatitude,
+        responderLongitude,
+        latitude,
+        longitude,
+      );
+
+    const estimatedRoadKilometers =
+      straightLineKilometers * 1.25;
+
+    const currentSpeedMetersPerSecond =
+      responderLocation?.speed !== null &&
+      responderLocation?.speed !== undefined
+        ? Number(responderLocation.speed)
+        : null;
+
+    const speedKilometersPerHour =
+      currentSpeedMetersPerSecond !== null &&
+      Number.isFinite(
+        currentSpeedMetersPerSecond,
+      ) &&
+      currentSpeedMetersPerSecond > 1
+        ? currentSpeedMetersPerSecond * 3.6
+        : 25;
+
+    const estimatedMinutes = Math.max(
+      1,
+      Math.ceil(
+        (estimatedRoadKilometers /
+          speedKilometersPerHour) *
+          60,
+      ),
+    );
+
+    return {
+      estimatedRoadKilometers,
+      estimatedMinutes,
+    };
+  }, [
+    latitude,
+    longitude,
+    responderLatitude,
+    responderLongitude,
+    responderLocation,
+  ]);
+
   if (isLoading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-100">
@@ -788,11 +847,10 @@ export default function RequestsPage() {
                     </h2>
 
                     <p className="mt-2 text-sm text-slate-500">
-                      The blue marker is your
-                      emergency location. The green
-                      marker appears when the
-                      responder starts sharing a
-                      live location.
+                      The emergency marker shows
+                      your location. The green
+                      marker shows the responder's
+                      latest shared GPS position.
                     </p>
 
                     <div
@@ -819,6 +877,38 @@ export default function RequestsPage() {
                     </div>
                   </div>
 
+                  {trackingMetrics && (
+                    <div className="mt-6 grid gap-4 sm:grid-cols-3">
+                      <TrackingMetric
+                        icon={Navigation}
+                        label="Estimated distance"
+                        value={`${trackingMetrics.estimatedRoadKilometers.toFixed(
+                          trackingMetrics.estimatedRoadKilometers < 10
+                            ? 1
+                            : 0,
+                        )} km`}
+                      />
+
+                      <TrackingMetric
+                        icon={Clock3}
+                        label="Estimated arrival"
+                        value={`${trackingMetrics.estimatedMinutes} min`}
+                      />
+
+                      <TrackingMetric
+                        icon={Gauge}
+                        label="GPS update"
+                        value={
+                          responderLocation?.updated_at
+                            ? formatRelativeTime(
+                                responderLocation.updated_at,
+                              )
+                            : "Unavailable"
+                        }
+                      />
+                    </div>
+                  )}
+
                   <div className="mt-6">
                     <RequestLocationMap
                       latitude={latitude}
@@ -836,8 +926,18 @@ export default function RequestsPage() {
                         responderLocation?.updated_at ??
                         null
                       }
+                      responderName={
+                        responder?.full_name ??
+                        null
+                      }
                     />
                   </div>
+
+                  <p className="mt-4 text-xs leading-5 text-slate-400">
+                    Distance and ETA are approximate
+                    estimates. Actual road travel
+                    time may vary.
+                  </p>
 
                   <a
                     href={`https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`}
@@ -1026,6 +1126,36 @@ function DetailItem({
   );
 }
 
+type TrackingMetricProps = {
+  icon: React.ComponentType<{
+    className?: string;
+  }>;
+  label: string;
+  value: string;
+};
+
+function TrackingMetric({
+  icon: Icon,
+  label,
+  value,
+}: TrackingMetricProps) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <span className="flex size-10 items-center justify-center rounded-xl bg-red-100 text-red-700">
+        <Icon className="size-5" />
+      </span>
+
+      <p className="mt-4 text-xs font-bold uppercase tracking-wider text-slate-400">
+        {label}
+      </p>
+
+      <p className="mt-1 text-lg font-extrabold text-slate-900">
+        {value}
+      </p>
+    </div>
+  );
+}
+
 type StatusBadgeProps = {
   status: string;
 };
@@ -1183,6 +1313,86 @@ function getStatusClasses(
     default:
       return "bg-slate-100 text-slate-700";
   }
+}
+
+function calculateDistanceKilometers(
+  latitudeA: number,
+  longitudeA: number,
+  latitudeB: number,
+  longitudeB: number,
+) {
+  const earthRadiusKilometers = 6371;
+
+  const latitudeDelta =
+    degreesToRadians(
+      latitudeB - latitudeA,
+    );
+
+  const longitudeDelta =
+    degreesToRadians(
+      longitudeB - longitudeA,
+    );
+
+  const firstLatitude =
+    degreesToRadians(latitudeA);
+
+  const secondLatitude =
+    degreesToRadians(latitudeB);
+
+  const haversine =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(firstLatitude) *
+      Math.cos(secondLatitude) *
+      Math.sin(longitudeDelta / 2) ** 2;
+
+  return (
+    2 *
+    earthRadiusKilometers *
+    Math.asin(Math.sqrt(haversine))
+  );
+}
+
+function degreesToRadians(
+  degrees: number,
+) {
+  return (degrees * Math.PI) / 180;
+}
+
+function formatRelativeTime(
+  dateValue: string,
+) {
+  const seconds = Math.max(
+    0,
+    Math.floor(
+      (Date.now() -
+        new Date(dateValue).getTime()) /
+        1000,
+    ),
+  );
+
+  if (seconds < 10) {
+    return "Just now";
+  }
+
+  if (seconds < 60) {
+    return `${seconds}s ago`;
+  }
+
+  const minutes = Math.floor(
+    seconds / 60,
+  );
+
+  if (minutes < 60) {
+    return `${minutes} min ago`;
+  }
+
+  const hours = Math.floor(
+    minutes / 60,
+  );
+
+  return `${hours} hr${
+    hours === 1 ? "" : "s"
+  } ago`;
 }
 
 function formatDateTime(

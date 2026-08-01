@@ -12,7 +12,7 @@ import {
   TileLayer,
   useMap,
 } from "react-leaflet";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 
 const emergencyMarkerIcon = L.icon({
   iconUrl:
@@ -34,6 +34,7 @@ type RequestLocationMapProps = {
   responderLatitude?: number | null;
   responderLongitude?: number | null;
   responderUpdatedAt?: string | null;
+  responderName?: string | null;
 };
 
 export default function RequestLocationMap({
@@ -43,26 +44,31 @@ export default function RequestLocationMap({
   responderLatitude = null,
   responderLongitude = null,
   responderUpdatedAt = null,
+  responderName = null,
 }: RequestLocationMapProps) {
-  const citizenPosition: [number, number] = [
-    latitude,
-    longitude,
-  ];
+  const citizenPosition = useMemo(
+    () => [latitude, longitude] as [number, number],
+    [latitude, longitude],
+  );
 
-  const hasResponderLocation =
-    responderLatitude !== null &&
-    responderLongitude !== null &&
-    Number.isFinite(responderLatitude) &&
-    Number.isFinite(responderLongitude);
+  const responderPosition = useMemo(() => {
+    if (
+      responderLatitude === null ||
+      responderLongitude === null ||
+      !Number.isFinite(responderLatitude) ||
+      !Number.isFinite(responderLongitude)
+    ) {
+      return null;
+    }
 
-  const responderPosition:
-    | [number, number]
-    | null = hasResponderLocation
-    ? [
-        responderLatitude as number,
-        responderLongitude as number,
-      ]
-    : null;
+    return [
+      responderLatitude,
+      responderLongitude,
+    ] as [number, number];
+  }, [
+    responderLatitude,
+    responderLongitude,
+  ]);
 
   return (
     <MapContainer
@@ -101,7 +107,7 @@ export default function RequestLocationMap({
         <>
           <CircleMarker
             center={responderPosition}
-            radius={11}
+            radius={12}
             pathOptions={{
               color: "#ffffff",
               weight: 4,
@@ -110,7 +116,10 @@ export default function RequestLocationMap({
             }}
           >
             <Popup>
-              <strong>Responder live location</strong>
+              <strong>
+                {responderName ||
+                  "Responder live location"}
+              </strong>
 
               {responderUpdatedAt && (
                 <>
@@ -132,7 +141,7 @@ export default function RequestLocationMap({
             pathOptions={{
               color: "#dc2626",
               weight: 4,
-              opacity: 0.75,
+              opacity: 0.8,
               dashArray: "8 10",
             }}
           />
@@ -169,10 +178,7 @@ function MapUpdater({
       return;
     }
 
-    map.setView(
-      citizenPosition,
-      map.getZoom(),
-    );
+    map.setView(citizenPosition, 17);
   }, [
     citizenPosition,
     responderPosition,

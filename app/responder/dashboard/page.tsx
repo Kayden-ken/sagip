@@ -2,6 +2,7 @@
 
 import {
   startLocationSharing,
+  startPresenceSharing,
   stopLocationSharing,
 } from "@/lib/location-sharing";
 import { supabase } from "@/lib/supabase";
@@ -226,6 +227,14 @@ export default function ResponderDashboardPage() {
 
       setResponder(responderData);
 
+      if (
+        responderData.availability === "Available"
+      ) {
+        startPresenceSharing(
+          responderData.id,
+        );
+      }
+
       await loadRequests(responderData.id);
 
       channel = supabase
@@ -344,6 +353,13 @@ export default function ResponderDashboardPage() {
               status: "On Duty",
             }
           : current,
+      );
+
+      stopLocationSharing();
+
+      startLocationSharing(
+        responder.id,
+        requestId,
       );
 
       setMessage(
@@ -548,6 +564,10 @@ export default function ResponderDashboardPage() {
                 status: "Online",
               }
             : current,
+        );
+
+        startPresenceSharing(
+          responder.id,
         );
       }
 

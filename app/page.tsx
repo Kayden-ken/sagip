@@ -5,9 +5,21 @@ import {
   HeartHandshake,
   MapPin,
   Menu,
+  PhoneCall,
   Shield,
   UserRound,
 } from "lucide-react";
+
+/*
+ * Replace these values with the official SAGIP hotline.
+ *
+ * HOTLINE_TEL:
+ * - Use numbers only for local short codes, such as "911".
+ * - For a Philippine mobile number, use the international format,
+ *   such as "+639123456789".
+ */
+const HOTLINE_DISPLAY = "0912 345 6789";
+const HOTLINE_TEL = "+639123456789";
 
 const quickAccessItems = [
   {
@@ -95,15 +107,26 @@ export default function HomePage() {
             <a className="transition hover:text-red-600" href="#features">
               Features
             </a>
+
             <a className="transition hover:text-red-600" href="#about">
               About
             </a>
+
             <a className="transition hover:text-red-600" href="#contact">
               Contact
             </a>
           </nav>
 
-          <div className="hidden items-center gap-6 sm:flex">
+          <div className="hidden items-center gap-3 sm:flex">
+            <a
+              href={`tel:${HOTLINE_TEL}`}
+              aria-label={`Call SAGIP emergency hotline at ${HOTLINE_DISPLAY}`}
+              className="inline-flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm font-extrabold text-red-700 transition hover:border-red-300 hover:bg-red-100"
+            >
+              <PhoneCall className="size-4" />
+              {HOTLINE_DISPLAY}
+            </a>
+
             <Link
               href="/login"
               className="text-sm font-semibold text-slate-700 transition hover:text-red-600"
@@ -134,6 +157,7 @@ export default function HomePage() {
           <div className="relative overflow-hidden bg-gradient-to-r from-red-600 to-red-800 px-7 py-12 text-white sm:px-11 lg:px-12">
             <div className="absolute -bottom-20 left-7 size-48 rounded-full bg-white/10" />
             <div className="absolute -top-24 right-20 size-60 rounded-full bg-white/10" />
+
             <div className="absolute right-10 top-12 hidden size-56 items-center justify-center rounded-full bg-white/10 lg:flex">
               <HeartHandshake className="size-20" fill="currentColor" />
             </div>
@@ -154,7 +178,7 @@ export default function HomePage() {
                 critical moments.
               </p>
 
-              <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+              <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
                 <Link
                   href="/emergency"
                   className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-6 py-3.5 font-bold text-red-600 shadow-lg transition hover:-translate-y-0.5 hover:bg-red-50"
@@ -164,12 +188,25 @@ export default function HomePage() {
                 </Link>
 
                 <a
+                  href={`tel:${HOTLINE_TEL}`}
+                  aria-label={`Call SAGIP emergency hotline at ${HOTLINE_DISPLAY}`}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-6 py-3.5 font-extrabold text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-emerald-600"
+                >
+                  <PhoneCall className="size-5" />
+                  Call {HOTLINE_DISPLAY}
+                </a>
+
+                <a
                   href="#about"
                   className="inline-flex items-center justify-center rounded-xl bg-white/20 px-6 py-3.5 font-bold text-white transition hover:bg-white/30"
                 >
                   Learn More
                 </a>
               </div>
+
+              <p className="mt-4 text-sm font-medium text-red-100">
+                Tap the hotline number to open your phone&apos;s call screen.
+              </p>
             </div>
           </div>
 
@@ -270,14 +307,62 @@ export default function HomePage() {
             </p>
           </div>
         </section>
+
+        <section
+          id="contact"
+          className="mt-8 rounded-3xl border border-red-200 bg-red-50 px-7 py-8 sm:px-10"
+        >
+          <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-bold uppercase tracking-[0.2em] text-red-600">
+                Emergency Hotline
+              </p>
+
+              <h2 className="mt-2 text-2xl font-extrabold text-slate-900">
+                Need immediate assistance?
+              </h2>
+
+              <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">
+                Tap or click the hotline number. On a mobile device, SAGIP will
+                open the phone dialer with the number ready to call.
+              </p>
+            </div>
+
+            <a
+              href={`tel:${HOTLINE_TEL}`}
+              aria-label={`Call SAGIP emergency hotline at ${HOTLINE_DISPLAY}`}
+              className="inline-flex shrink-0 items-center justify-center gap-3 rounded-2xl bg-red-700 px-6 py-4 text-lg font-extrabold text-white shadow-lg transition hover:-translate-y-0.5 hover:bg-red-800"
+            >
+              <PhoneCall className="size-6" />
+              {HOTLINE_DISPLAY}
+            </a>
+          </div>
+        </section>
       </div>
 
-      <footer
-        id="contact"
-        className="mt-8 border-t border-slate-200 bg-white"
+      <a
+        href={`tel:${HOTLINE_TEL}`}
+        aria-label={`Call SAGIP emergency hotline at ${HOTLINE_DISPLAY}`}
+        className="fixed bottom-5 right-5 z-50 inline-flex items-center gap-3 rounded-full bg-red-700 px-5 py-4 font-extrabold text-white shadow-2xl transition hover:-translate-y-0.5 hover:bg-red-800 focus:outline-none focus:ring-4 focus:ring-red-200"
       >
+        <PhoneCall className="size-5" />
+
+        <span className="hidden sm:inline">
+          Call Hotline
+        </span>
+      </a>
+
+      <footer className="mt-8 border-t border-slate-200 bg-white">
         <div className="mx-auto flex max-w-6xl flex-col gap-3 px-5 py-8 text-sm text-slate-500 sm:flex-row sm:items-center sm:justify-between">
           <p>© 2026 SAGIP Emergency Response System</p>
+
+          <a
+            href={`tel:${HOTLINE_TEL}`}
+            className="inline-flex items-center gap-2 font-bold text-red-700 transition hover:text-red-800"
+          >
+            <PhoneCall className="size-4" />
+            Emergency Hotline: {HOTLINE_DISPLAY}
+          </a>
 
           <p>Prototype for academic and testing purposes only.</p>
         </div>

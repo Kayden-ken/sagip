@@ -149,6 +149,8 @@ export default function DashboardPage() {
   );
 
   useEffect(() => {
+    let isCancelled = false;
+
     let requestChannel:
       | ReturnType<
           typeof supabase.channel
@@ -158,111 +160,154 @@ export default function DashboardPage() {
     async function initializeDashboard() {
       setError("");
 
-      const {
-        data: { user },
-        error: userError,
-      } =
-        await supabase.auth.getUser();
+      try {
+        const {
+          data: { user },
+          error: userError,
+        } =
+          await supabase.auth.getUser();
 
-      if (userError || !user) {
-        router.replace("/login");
-        return;
-      }
+        if (isCancelled) {
+          return;
+        }
 
-      const {
-        data: responderData,
-        error: responderError,
-      } = await supabase
-        .from("responders")
-        .select("id")
-        .eq("auth_id", user.id)
-        .maybeSingle();
+        if (userError || !user) {
+          router.replace("/login");
+          return;
+        }
 
-      if (responderError) {
-        console.error(
-          "Unable to check account role:",
-          responderError.message,
-        );
-      }
+        const {
+          data: responderData,
+          error: responderError,
+        } = await supabase
+          .from("responders")
+          .select("id")
+          .eq("auth_id", user.id)
+          .maybeSingle();
 
-      if (responderData) {
-        router.replace(
-          "/responder/dashboard",
-        );
-        return;
-      }
+        if (isCancelled) {
+          return;
+        }
 
-      const {
-        data: profileData,
-        error: profileError,
-      } = await supabase
-        .from("profiles")
-        .select(
-          "id, first_name, last_name",
-        )
-        .eq("auth_id", user.id)
-        .maybeSingle();
+        if (responderError) {
+          console.error(
+            "Unable to check account role:",
+            responderError.message,
+          );
+        }
 
-      if (profileError) {
-        setError(
-          profileError.message,
-        );
-      }
+        if (responderData) {
+          router.replace(
+            "/responder/dashboard",
+          );
+          return;
+        }
 
-      setProfile({
-        firstName:
-          profileData?.first_name ??
-          String(
-            user.user_metadata
-              .first_name ?? "",
-          ),
-        lastName:
-          profileData?.last_name ??
-          String(
-            user.user_metadata
-              .last_name ?? "",
-          ),
-        email: user.email ?? "",
-      });
-
-      if (profileData?.id) {
-        const selectedProfileId =
-          profileData.id;
-
-        await loadActiveRequest(
-          selectedProfileId,
-        );
-
-        requestChannel = supabase
-          .channel(
-            `dashboard-request-${selectedProfileId}`,
+        const {
+          data: profileData,
+          error: profileError,
+        } = await supabase
+          .from("profiles")
+          .select(
+            "id, first_name, last_name",
           )
-          .on(
-            "postgres_changes",
-            {
-              event: "*",
-              schema: "public",
-              table:
-                "emergency_requests",
-              filter: `profile_id=eq.${selectedProfileId}`,
-            },
-            async () => {
-              await loadActiveRequest(
-                selectedProfileId,
-              );
-            },
-          )
-          .subscribe();
-      }
+          .eq("auth_id", user.id)
+          .maybeSingle();
 
-      setIsLoading(false);
+        if (isCancelled) {
+          return;
+        }
+
+        if (profileError) {
+          setError(
+            profileError.message,
+          );
+        }
+
+        setProfile({
+          firstName:
+            profileData?.first_name ??
+            String(
+              user.user_metadata
+                .first_name ?? "",
+            ),
+          lastName:
+            profileData?.last_name ??
+            String(
+              user.user_metadata
+                .last_name ?? "",
+            ),
+          email: user.email ?? "",
+        });
+
+        if (profileData?.id) {
+          const selectedProfileId =
+            profileData.id;
+
+          await loadActiveRequest(
+            selectedProfileId,
+          );
+
+          if (isCancelled) {
+            return;
+          }
+
+          const channelName =
+            `dashboard-request-${selectedProfileId}-${crypto.randomUUID()}`;
+
+          requestChannel = supabase
+            .channel(channelName)
+            .on(
+              "postgres_changes",
+              {
+                event: "*",
+                schema: "public",
+                table:
+                  "emergency_requests",
+                filter: `profile_id=eq.${selectedProfileId}`,
+              },
+              () => {
+                void loadActiveRequest(
+                  selectedProfileId,
+                );
+              },
+            )
+            .subscribe((status) => {
+              if (
+                status === "CHANNEL_ERROR" &&
+                !isCancelled
+              ) {
+                setError(
+                  "Unable to connect to live emergency updates. You can still refresh the page manually.",
+                );
+              }
+            });
+        }
+      } catch (initializationError) {
+        if (!isCancelled) {
+          console.error(
+            "Unable to initialize dashboard:",
+            initializationError,
+          );
+
+          setError(
+            "Unable to load your SAGIP dashboard. Please refresh the page and try again.",
+          );
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoading(false);
+        }
+      }
     }
 
-    initializeDashboard();
+    void initializeDashboard();
 
     return () => {
+      isCancelled = true;
+
       if (requestChannel) {
-        supabase.removeChannel(
+        void supabase.removeChannel(
           requestChannel,
         );
       }

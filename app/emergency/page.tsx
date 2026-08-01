@@ -8,15 +8,21 @@ import {
   Flame,
   HeartPulse,
   LoaderCircle,
+  LogIn,
   MapPin,
+  Phone,
   Shield,
   ShieldAlert,
+  UserRound,
   Waves,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import {
+  useEffect,
+  useState,
+} from "react";
 
 const LocationMap = dynamic(
   () => import("@/components/location-map"),
@@ -39,6 +45,18 @@ type EmergencyType = {
   icon: React.ComponentType<{
     className?: string;
   }>;
+};
+
+type RequesterMode =
+  | "loading"
+  | "registered"
+  | "guest";
+
+type GuestSubmissionResponse = {
+  message?: string;
+  trackingCode?: string;
+  expiresAt?: string;
+  error?: string;
 };
 
 const emergencyTypes: EmergencyType[] = [
@@ -87,36 +105,66 @@ const activeStatuses = [
 export default function EmergencyPage() {
   const router = useRouter();
 
-  const [profileId, setProfileId] = useState("");
-  const [emergencyType, setEmergencyType] = useState("");
-  const [description, setDescription] = useState("");
+  const [requesterMode, setRequesterMode] =
+    useState<RequesterMode>("loading");
+
+  const [profileId, setProfileId] =
+    useState("");
+
+  const [guestName, setGuestName] =
+    useState("");
+
+  const [guestPhone, setGuestPhone] =
+    useState("");
+
+  const [emergencyType, setEmergencyType] =
+    useState("");
+
+  const [description, setDescription] =
+    useState("");
 
   const [latitude, setLatitude] =
     useState<number | null>(null);
+
   const [longitude, setLongitude] =
     useState<number | null>(null);
-  const [address, setAddress] = useState("");
 
-  const [isLoading, setIsLoading] = useState(true);
-  const [isLocating, setIsLocating] = useState(false);
-  const [isLookingUpAddress, setIsLookingUpAddress] =
+  const [address, setAddress] =
+    useState("");
+
+  const [isLocating, setIsLocating] =
     useState(false);
+
+  const [
+    isLookingUpAddress,
+    setIsLookingUpAddress,
+  ] = useState(false);
+
   const [isSubmitting, setIsSubmitting] =
     useState(false);
 
-  const [error, setError] = useState("");
-  const [locationSuccess, setLocationSuccess] =
-    useState(false);
+  const [error, setError] =
+    useState("");
+
+  const [
+    locationSuccess,
+    setLocationSuccess,
+  ] = useState(false);
 
   useEffect(() => {
-    async function loadProfile() {
+    let isCancelled = false;
+
+    async function detectRequester() {
       const {
         data: { user },
-        error: userError,
       } = await supabase.auth.getUser();
 
-      if (userError || !user) {
-        router.replace("/login");
+      if (isCancelled) {
+        return;
+      }
+
+      if (!user) {
+        setRequesterMode("guest");
         return;
       }
 
@@ -125,30 +173,49 @@ export default function EmergencyPage() {
         error: profileError,
       } = await supabase
         .from("profiles")
-        .select("id")
+        .select("id, first_name, last_name")
         .eq("auth_id", user.id)
         .maybeSingle();
 
-      if (profileError) {
-        setError(profileError.message);
-        setIsLoading(false);
+      if (isCancelled) {
         return;
       }
 
-      if (!profile) {
-        setError(
-          "Please complete and save your profile before requesting emergency assistance.",
-        );
-        setIsLoading(false);
+      if (profileError || !profile) {
+        /*
+         * A signed-in account without a citizen profile can still submit as
+         * a guest rather than being blocked during an emergency.
+         */
+        setRequesterMode("guest");
+
+        if (profileError) {
+          console.error(
+            "Unable to load citizen profile:",
+            profileError.message,
+          );
+        }
+
         return;
       }
 
       setProfileId(profile.id);
-      setIsLoading(false);
+      setGuestName(
+        [
+          profile.first_name,
+          profile.last_name,
+        ]
+          .filter(Boolean)
+          .join(" "),
+      );
+      setRequesterMode("registered");
     }
 
-    loadProfile();
-  }, [router]);
+    void detectRequester();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
 
   async function reverseGeocode(
     selectedLatitude: number,
@@ -156,11 +223,15 @@ export default function EmergencyPage() {
   ) {
     setIsLookingUpAddress(true);
 
-    const controller = new AbortController();
+    const controller =
+      new AbortController();
 
-    const timeoutId = window.setTimeout(() => {
-      controller.abort();
-    }, 8000);
+    const timeoutId = window.setTimeout(
+      () => {
+        controller.abort();
+      },
+      8000,
+    );
 
     try {
       const response = await fetch(
@@ -179,16 +250,22 @@ export default function EmergencyPage() {
         );
       }
 
-      const result = await response.json();
+      const result =
+        (await response.json()) as {
+          display_name?: unknown;
+        };
 
       setAddress(
-        String(result.display_name ?? ""),
+        typeof result.display_name ===
+          "string"
+          ? result.display_name
+          : "",
       );
     } catch {
       setAddress("");
 
       setError(
-        "Your GPS location was detected. The address lookup was unavailable, but you may still submit the request or enter the address manually.",
+        "Your GPS location was detected. Address lookup was unavailable, but you may enter the address manually and continue.",
       );
     } finally {
       window.clearTimeout(timeoutId);
@@ -213,6 +290,7 @@ export default function EmergencyPage() {
       async (position) => {
         const detectedLatitude =
           position.coords.latitude;
+
         const detectedLongitude =
           position.coords.longitude;
 
@@ -234,7 +312,7 @@ export default function EmergencyPage() {
           locationError.PERMISSION_DENIED
         ) {
           setError(
-            "Location permission was denied. Please allow location access in your browser and try again.",
+            "Location permission was denied. Allow location access in your browser and try again.",
           );
           return;
         }
@@ -283,13 +361,6 @@ export default function EmergencyPage() {
 
     setError("");
 
-    if (!profileId) {
-      setError(
-        "Your profile could not be found. Please save your profile first.",
-      );
-      return;
-    }
-
     if (!emergencyType) {
       setError(
         "Please select an emergency type.",
@@ -302,7 +373,17 @@ export default function EmergencyPage() {
       longitude === null
     ) {
       setError(
-        "Please capture or select your current location before submitting.",
+        "Capture or select your current location before submitting.",
+      );
+      return;
+    }
+
+    if (
+      requesterMode === "guest" &&
+      !isValidPhone(guestPhone)
+    ) {
+      setError(
+        "Enter a valid contact number containing 7 to 15 digits.",
       );
       return;
     }
@@ -310,100 +391,146 @@ export default function EmergencyPage() {
     setIsSubmitting(true);
 
     try {
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
-
-      if (userError || !user) {
-        setError(
-          "Your session has expired. Please sign in again.",
-        );
-        router.replace("/login");
-        return;
+      if (
+        requesterMode === "registered" &&
+        profileId
+      ) {
+        await submitRegisteredRequest();
+      } else {
+        await submitGuestRequest();
       }
-
-      const {
-        data: existingRequest,
-        error: existingRequestError,
-      } = await supabase
-        .from("emergency_requests")
-        .select("id, status")
-        .eq("profile_id", profileId)
-        .in("status", activeStatuses)
-        .order("created_at", {
-          ascending: false,
-        })
-        .limit(1)
-        .maybeSingle();
-
-      if (existingRequestError) {
-        setError(existingRequestError.message);
-        return;
-      }
-
-      if (existingRequest) {
-        setError(
-          "You already have an active emergency request. Track or cancel it before creating another request.",
-        );
-
-        setTimeout(() => {
-          router.push("/requests");
-        }, 1800);
-
-        return;
-      }
-
-      const {
-        data: insertedRequest,
-        error: insertError,
-      } = await supabase
-        .from("emergency_requests")
-        .insert({
-          profile_id: profileId,
-          emergency_type: emergencyType,
-          description:
-            description.trim() || null,
-          latitude,
-          longitude,
-          address: address.trim() || null,
-          status: "Pending",
-        })
-        .select(
-          `
-            id,
-            profile_id,
-            emergency_type,
-            status,
-            created_at
-          `,
-        )
-        .single();
-
-      if (insertError) {
-        setError(insertError.message);
-        return;
-      }
-
-      if (!insertedRequest) {
-        setError(
-          "The emergency request could not be confirmed. Please try again.",
-        );
-        return;
-      }
-
-      router.push("/requests");
-      router.refresh();
-    } catch {
+    } catch (submissionError) {
       setError(
-        "Unable to submit your emergency request. Please check your connection and try again.",
+        getErrorMessage(
+          submissionError,
+          "Unable to submit your emergency request. Check your connection and try again.",
+        ),
       );
     } finally {
       setIsSubmitting(false);
     }
   }
 
-  if (isLoading) {
+  async function submitRegisteredRequest() {
+    const {
+      data: existingRequest,
+      error: existingRequestError,
+    } = await supabase
+      .from("emergency_requests")
+      .select("id, status")
+      .eq("profile_id", profileId)
+      .in("status", activeStatuses)
+      .order("created_at", {
+        ascending: false,
+      })
+      .limit(1)
+      .maybeSingle();
+
+    if (existingRequestError) {
+      throw existingRequestError;
+    }
+
+    if (existingRequest) {
+      setError(
+        "You already have an active emergency request. Track or cancel it before creating another request.",
+      );
+
+      window.setTimeout(() => {
+        router.push("/requests");
+      }, 1800);
+
+      return;
+    }
+
+    const {
+      data: insertedRequest,
+      error: insertError,
+    } = await supabase
+      .from("emergency_requests")
+      .insert({
+        profile_id: profileId,
+        request_source: "registered",
+        emergency_type: emergencyType,
+        description:
+          description.trim() || null,
+        latitude,
+        longitude,
+        address:
+          address.trim() || null,
+        status: "Pending",
+      })
+      .select("id")
+      .single();
+
+    if (insertError) {
+      throw insertError;
+    }
+
+    if (!insertedRequest) {
+      throw new Error(
+        "The emergency request could not be confirmed.",
+      );
+    }
+
+    router.push("/requests");
+    router.refresh();
+  }
+
+  async function submitGuestRequest() {
+    const response = await fetch(
+      "/api/emergency/guest",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+        body: JSON.stringify({
+          guestName:
+            guestName.trim() || null,
+          guestPhone,
+          emergencyType,
+          description:
+            description.trim() || null,
+          latitude,
+          longitude,
+          address:
+            address.trim() || null,
+        }),
+      },
+    );
+
+    const result =
+      (await response.json()) as GuestSubmissionResponse;
+
+    if (
+      !response.ok ||
+      !result.trackingCode
+    ) {
+      throw new Error(
+        result.error ??
+          "Unable to submit the guest emergency request.",
+      );
+    }
+
+    window.sessionStorage.setItem(
+      "sagip_guest_phone",
+      guestPhone,
+    );
+
+    window.sessionStorage.setItem(
+      "sagip_guest_tracking_code",
+      result.trackingCode,
+    );
+
+    router.push(
+      `/track?code=${encodeURIComponent(
+        result.trackingCode,
+      )}`,
+    );
+  }
+
+  if (requesterMode === "loading") {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-100">
         <div className="flex items-center gap-2 text-sm font-semibold text-slate-500">
@@ -414,12 +541,19 @@ export default function EmergencyPage() {
     );
   }
 
+  const isGuest =
+    requesterMode === "guest";
+
+  const backHref = isGuest
+    ? "/"
+    : "/dashboard";
+
   return (
     <main className="min-h-screen bg-[#f4f7fb] text-slate-900">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-4">
           <Link
-            href="/dashboard"
+            href={backHref}
             className="flex items-center gap-3"
           >
             <span className="flex size-11 items-center justify-center rounded-xl bg-red-700 text-white">
@@ -441,11 +575,13 @@ export default function EmergencyPage() {
           </Link>
 
           <Link
-            href="/dashboard"
+            href={backHref}
             className="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 transition hover:text-red-700"
           >
             <ArrowLeft className="size-4" />
-            Back to Dashboard
+            {isGuest
+              ? "Back to Home"
+              : "Back to Dashboard"}
           </Link>
         </div>
       </header>
@@ -468,10 +604,116 @@ export default function EmergencyPage() {
             </p>
           </div>
 
+          {isGuest ? (
+            <div className="mt-7 rounded-2xl border border-blue-200 bg-blue-50 p-5">
+              <div className="flex items-start gap-3">
+                <UserRound className="mt-0.5 size-5 shrink-0 text-blue-700" />
+
+                <div>
+                  <p className="font-extrabold text-blue-900">
+                    Continue without an account
+                  </p>
+
+                  <p className="mt-1 text-sm leading-6 text-blue-700">
+                    You can submit immediately. A secure tracking code will be
+                    provided after submission.
+                  </p>
+
+                  <Link
+                    href="/login"
+                    className="mt-3 inline-flex items-center gap-2 text-sm font-extrabold text-blue-800 hover:text-blue-950"
+                  >
+                    <LogIn className="size-4" />
+                    Sign in instead
+                  </Link>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-7 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-sm font-semibold text-emerald-800">
+              <CheckCircle2 className="size-5 shrink-0" />
+              This request will be saved to your SAGIP account and incident
+              history.
+            </div>
+          )}
+
           <form
             onSubmit={handleSubmit}
             className="mt-9 space-y-8"
           >
+            {isGuest && (
+              <section className="rounded-2xl border border-slate-200 bg-slate-50 p-5 sm:p-6">
+                <h2 className="flex items-center gap-2 text-lg font-extrabold">
+                  <Phone className="size-5 text-red-700" />
+                  Guest Contact Information
+                </h2>
+
+                <p className="mt-2 text-sm leading-6 text-slate-500">
+                  Your contact number is required to retrieve this request
+                  securely with the tracking code.
+                </p>
+
+                <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label
+                      htmlFor="guestName"
+                      className="mb-2 block text-sm font-bold text-slate-700"
+                    >
+                      Name{" "}
+                      <span className="font-normal text-slate-400">
+                        (optional)
+                      </span>
+                    </label>
+
+                    <input
+                      id="guestName"
+                      name="guestName"
+                      type="text"
+                      autoComplete="name"
+                      maxLength={120}
+                      value={guestName}
+                      disabled={isSubmitting}
+                      onChange={(event) =>
+                        setGuestName(
+                          event.target.value,
+                        )
+                      }
+                      placeholder="Your name"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3.5 text-sm outline-none transition focus:border-red-500 focus:ring-4 focus:ring-red-100 disabled:bg-slate-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="guestPhone"
+                      className="mb-2 block text-sm font-bold text-slate-700"
+                    >
+                      Contact Number
+                    </label>
+
+                    <input
+                      id="guestPhone"
+                      name="guestPhone"
+                      type="tel"
+                      inputMode="tel"
+                      autoComplete="tel"
+                      maxLength={30}
+                      required
+                      value={guestPhone}
+                      disabled={isSubmitting}
+                      onChange={(event) =>
+                        setGuestPhone(
+                          event.target.value,
+                        )
+                      }
+                      placeholder="09XX XXX XXXX"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3.5 text-sm outline-none transition focus:border-red-500 focus:ring-4 focus:ring-red-100 disabled:bg-slate-100"
+                    />
+                  </div>
+                </div>
+              </section>
+            )}
+
             <section>
               <h2 className="text-lg font-extrabold">
                 Emergency Type
@@ -480,8 +722,10 @@ export default function EmergencyPage() {
               <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {emergencyTypes.map((type) => {
                   const Icon = type.icon;
+
                   const selected =
-                    emergencyType === type.value;
+                    emergencyType ===
+                    type.value;
 
                   return (
                     <button
@@ -530,6 +774,7 @@ export default function EmergencyPage() {
                 id="description"
                 name="description"
                 rows={4}
+                maxLength={1000}
                 value={description}
                 disabled={isSubmitting}
                 onChange={(event) =>
@@ -551,8 +796,7 @@ export default function EmergencyPage() {
                   </h2>
 
                   <p className="mt-2 text-sm text-slate-500">
-                    Use your GPS location, then
-                    drag the marker or click the map
+                    Use your GPS location, then drag the marker or click the map
                     to improve accuracy.
                   </p>
                 </div>
@@ -581,8 +825,8 @@ export default function EmergencyPage() {
               {locationSuccess && (
                 <div className="mt-5 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
                   <CheckCircle2 className="size-5 shrink-0" />
-                  Location detected successfully.
-                  Confirm the marker position below.
+                  Location detected successfully. Confirm the marker position
+                  below.
                 </div>
               )}
 
@@ -612,6 +856,7 @@ export default function EmergencyPage() {
                     id="address"
                     name="address"
                     type="text"
+                    maxLength={500}
                     value={address}
                     disabled={isSubmitting}
                     onChange={(event) =>
@@ -633,9 +878,8 @@ export default function EmergencyPage() {
                 </div>
 
                 <p className="mt-2 text-xs leading-5 text-slate-500">
-                  You may edit this address if the
-                  automatically detected result is
-                  incomplete.
+                  You may edit this address if the automatically detected result
+                  is incomplete.
                 </p>
               </div>
 
@@ -654,7 +898,8 @@ export default function EmergencyPage() {
                     type="text"
                     readOnly
                     value={
-                      latitude?.toFixed(6) ?? ""
+                      latitude?.toFixed(6) ??
+                      ""
                     }
                     placeholder="Not captured"
                     className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3.5 font-mono text-sm text-slate-600"
@@ -675,7 +920,9 @@ export default function EmergencyPage() {
                     type="text"
                     readOnly
                     value={
-                      longitude?.toFixed(6) ?? ""
+                      longitude?.toFixed(
+                        6,
+                      ) ?? ""
                     }
                     placeholder="Not captured"
                     className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3.5 font-mono text-sm text-slate-600"
@@ -697,7 +944,6 @@ export default function EmergencyPage() {
               type="submit"
               disabled={
                 isSubmitting ||
-                !profileId ||
                 latitude === null ||
                 longitude === null
               }
@@ -708,18 +954,43 @@ export default function EmergencyPage() {
                 : latitude === null ||
                     longitude === null
                   ? "Use Your Location First"
-                  : "Send Emergency Request"}
+                  : isGuest
+                    ? "Send Guest Emergency Request"
+                    : "Send Emergency Request"}
             </button>
 
             <p className="text-center text-xs leading-5 text-slate-400">
-              Prototype system only. Do not rely
-              on SAGIP as an official emergency
-              channel until connected to real
-              emergency agencies.
+              Prototype system only. Do not rely on SAGIP as an official
+              emergency channel until connected to real emergency agencies.
             </p>
           </form>
         </div>
       </section>
     </main>
   );
+}
+
+function isValidPhone(value: string) {
+  const digits = value.replace(/\D/g, "");
+
+  return (
+    digits.length >= 7 &&
+    digits.length <= 15
+  );
+}
+
+function getErrorMessage(
+  error: unknown,
+  fallback: string,
+) {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+
+  return fallback;
 }
