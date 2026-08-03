@@ -89,8 +89,6 @@ const statistics = [
 export default function HomePage() {
   return (
     <main className="min-h-screen bg-[#f4f7fb] text-slate-900">
-      <div className="h-8 bg-[#553945]" />
-
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex h-[76px] max-w-6xl items-center justify-between px-5">
           <Link href="/" className="flex items-center gap-3">
