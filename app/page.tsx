@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
 import {
   Bolt,
@@ -8,6 +11,7 @@ import {
   PhoneCall,
   Shield,
   UserRound,
+  X,
 } from "lucide-react";
 
 /*
@@ -87,6 +91,7 @@ const statistics = [
 ];
 
 export default function HomePage() {
+  const [isOpen,setIsOpen]=useState(false);
   return (
     <main className="min-h-screen bg-[#f4f7fb] text-slate-900">
       <header className="border-b border-slate-200 bg-white">
@@ -143,11 +148,23 @@ export default function HomePage() {
           <button
             type="button"
             aria-label="Open navigation menu"
+            onClick={()=>setIsOpen(!isOpen)}
             className="rounded-lg border border-slate-200 p-2 text-slate-700 sm:hidden"
           >
-            <Menu className="size-5" />
+            {isOpen ? <X className="size-5"/> : <Menu className="size-5" />}
           </button>
         </div>
+        {isOpen && (
+        <div className="border-t border-slate-200 bg-white sm:hidden">
+          <nav className="flex flex-col px-5 py-4">
+            <a href="#features" onClick={()=>setIsOpen(false)} className="py-3">Features</a>
+            <a href="#about" onClick={()=>setIsOpen(false)} className="py-3">About</a>
+            <a href="#contact" onClick={()=>setIsOpen(false)} className="py-3">Contact</a>
+            <Link href="/login" onClick={()=>setIsOpen(false)} className="py-3">Sign In</Link>
+            <Link href="/register" onClick={()=>setIsOpen(false)} className="rounded-lg bg-red-700 py-3 text-center text-white">Get Started</Link>
+          </nav>
+        </div>
+        )}
       </header>
 
       <div className="mx-auto max-w-6xl px-5 py-8">
